@@ -1,0 +1,148 @@
+#!/usr/bin/env python3
+"""Cline PreToolUse hook: block writes containing XML tool markup contamination.
+
+Deployed into workspace .clinerules/hooks/PreToolUse by ClineBackend.
+Runs before every Cline tool call. For write_to_file and replace_in_file,
+checks that the content does not contain leaked XML tool-calling tokens
+(e.g. </write_to_file>, <execute_command>) which indicate the model has
+confused its tool protocol with file content.
+
+For Python files, additionally validates syntax with ast.parse.
+
+Returns JSON to stdout:
+  {"cancel": false}                              -- allow the operation
+  {"cancel": true, "errorMessage": "...",        -- block the operation
+   "contextModification": "..."}                    and inject guidance
+"""
+
+import ast
+import json
+import sys
+
+# XML tool markup tokens that should NEVER appear inside file content.
+# These are Cline's tool-calling protocol tags. If they appear in the
+# content payload, the model has leaked its tool protocol into the file.
+TOOL_MARKUP_TOKENS = [
+    "</write_to_file>",
+    "<write_to_file>",
+    "</replace_in_file>",
+    "<replace_in_file>",
+    "<execute_command>",
+    "</execute_command>",
+    "<read_file>",
+    "</read_file>",
+    "<list_files>",
+    "</list_files>",
+    "<search_files>",
+    "</search_files>",
+    "<attempt_completion>",
+    "</attempt_completion>",
+    "<environment_details>",
+    "</environment_details>",
+    "<feedback>",
+    "</feedback>",
+]
+
+CONTEXT_GUIDANCE = (
+    "HOOK VIOLATION: Your previous write_to_file or replace_in_file "
+    "contained XML tool markup tokens (like </write_to_file> or "
+    "<execute_command>) embedded in the file content. This corrupts the "
+    "output file. You MUST regenerate the file content as pure source "
+    "code with NO XML tool tags anywhere inside it. Write ONLY the "
+    "programming language content for the file. Do not mix Cline tool "
+    "protocol XML with file content."
+)
+
+
+def check_tool_markup(content: str) -> str | None:
+    """Return the first offending token found, or None if clean."""
+    content_lower = content.lower()
+    for token in TOOL_MARKUP_TOKENS:
+        if token.lower() in content_lower:
+            return token
+    return None
+
+
+def check_python_syntax(content: str, path: str) -> str | None:
+    """Return syntax error description if Python is invalid, else None."""
+    try:
+        ast.parse(content, filename=path)
+        return None
+    except SyntaxError as e:
+        return f"Python syntax error at line {e.lineno}: {e.msg}"
+
+
+def main() -> None:
+    try:
+        raw = sys.stdin.read()
+        data = json.loads(raw)
+    except (json.JSONDecodeError, OSError):
+        # If we can't parse input, allow the operation (fail open).
+        print(json.dumps({"cancel": False}))
+        return
+
+    hook_data = data.get("preToolUse", {})
+    tool_name = hook_data.get("toolName", "")
+    params = hook_data.get("parameters", {})
+
+    # Only validate write operations.
+    if tool_name not in ("write_to_file", "replace_in_file"):
+        print(json.dumps({"cancel": False}))
+        return
+
+    # Extract content to validate. For write_to_file it's "content",
+    # for replace_in_file it's "new_content" or "replacement".
+    content = (
+        params.get("content", "")
+        or params.get("new_content", "")
+        or params.get("replacement", "")
+    )
+
+    if not content:
+        print(json.dumps({"cancel": False}))
+        return
+
+    file_path = params.get("path", "")
+
+    # Check 1: XML tool markup contamination.
+    bad_token = check_tool_markup(content)
+    if bad_token:
+        result = {
+            "cancel": True,
+            "errorMessage": (
+                f"BLOCKED: Content contains XML tool markup '{bad_token}'. "
+                f"File content must not include Cline protocol tags. "
+                f"Regenerate the content as pure source code."
+            ),
+            "contextModification": CONTEXT_GUIDANCE,
+        }
+        print(json.dumps(result))
+        return
+
+    # Check 2: Python syntax validation for .py files.
+    # Warn-only mode (D055): cancel=true triggers Cline's resume_task ask
+    # state, which hangs indefinitely in headless -y mode. Instead, allow
+    # the write but inject context telling the model about the syntax error.
+    # The test cycle will catch it anyway, and a recoverable test failure
+    # is better than an unrecoverable hang.
+    if file_path.endswith(".py"):
+        syntax_err = check_python_syntax(content, file_path)
+        if syntax_err:
+            result = {
+                "cancel": False,
+                "contextModification": (
+                    f"WARNING: The Python file you just wrote has a syntax "
+                    f"error: {syntax_err}. The write was allowed but the "
+                    f"file will fail to import or execute. Fix the syntax "
+                    f"error in your next edit."
+                ),
+            }
+            print(json.dumps(result))
+            return
+
+    # All checks passed.
+    print(json.dumps({"cancel": False}))
+
+
+if __name__ == "__main__":
+    main()

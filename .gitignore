@@ -1,0 +1,7 @@
+.cline/
+.cline-state/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/

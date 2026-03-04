@@ -1,0 +1,43 @@
+# Workspace Rules for Straylight Factory Pipeline
+
+## Critical: File Content Integrity
+
+When writing files with write_to_file or replace_in_file:
+
+1. File content must contain ONLY source code in the target language.
+2. NEVER include XML tool markup tags (like </write_to_file>, <execute_command>,
+   <read_file>, <environment_details>, etc.) inside file content.
+3. If you are writing a large file, ensure the ENTIRE content is included.
+   Do not truncate or use placeholders like "// ... rest of file".
+4. For Python files, ensure the content is syntactically valid Python.
+
+## Workflow
+
+1. Read the specification and existing code first.
+2. Write code files.
+3. Run tests with pytest BEFORE doing anything else.
+4. If tests fail, read the error output carefully and fix the specific issue.
+5. Do NOT rewrite entire files when a targeted edit (replace_in_file) suffices.
+6. Do NOT enter polish/refactor loops. Once tests pass and code is correct, stop.
+
+## Python Environment
+
+- A Python venv is available at .venv/ in the workspace root.
+- Use .venv/bin/python to run scripts and .venv/bin/pip to install packages.
+- pytest is pre-installed in the venv.
+- Do NOT use system python3 or pip directly (blocked by PEP 668 on Ubuntu 24.04).
+- Do NOT install third-party libraries that replace the task you've been asked to implement.
+
+## Testing
+
+- Always run `.venv/bin/python -m pytest -xvs` in the project directory to validate your work.
+- If pytest fails at COLLECTION (import/syntax errors), that means your code
+  has fundamental errors. Fix those before anything else.
+- A test run that takes < 1 second and fails at collection is a syntax problem,
+  not a logic problem.
+
+## Completion
+
+When all tests pass and the implementation matches the specification:
+- Use attempt_completion to signal you are done.
+- Do NOT continue polishing, refactoring, or adding unrequested features.
